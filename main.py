@@ -36,8 +36,9 @@ POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")  # e.g., "postgresql://
 # Embeddings
 embeddings = HuggingFaceEmbeddings(
     model_name="AITeamVN/Vietnamese_Embedding",
-    api_token=HUGGINGFACE_API_KEY
-)
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True}
+) 
 
 # Qdrant Vector Store Tool
 @tool
@@ -55,7 +56,7 @@ def qdrant_vector_store(query: str) -> str:
 
 # LLM (Google Gemini)
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.0-flash",
     google_api_key=GOOGLE_API_KEY,
     temperature=0.3
 )
