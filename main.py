@@ -36,7 +36,7 @@ POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")  # e.g., "postgresql://
 # Embeddings
 embeddings = HuggingFaceEmbeddings(
     model_name="AITeamVN/Vietnamese_Embedding",
-    huggingfacehub_api_token=HUGGINGFACE_API_KEY
+    api_token=HUGGINGFACE_API_KEY
 )
 
 # Qdrant Vector Store Tool
