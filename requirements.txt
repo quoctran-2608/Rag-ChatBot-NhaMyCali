@@ -1,6 +1,6 @@
 fastapi
-uvicorn
-langchain
+uvicorn==0.38.0
+langchain==0.2.16
 langchain_classic
 langchain-google-genai
 langchain-huggingface
