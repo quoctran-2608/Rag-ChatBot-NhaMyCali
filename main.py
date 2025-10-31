@@ -6,12 +6,12 @@ from typing import List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, Query
 from pydantic import BaseModel
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain.memory import ConversationBufferMemory
+from langchain_classic.memory import ConversationBufferMemory
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import Qdrant
 from langchain.tools import tool
-from langchain.prompts import PromptTemplate
+from langchain_classic.prompts import PromptTemplate
 from langchain_postgres import PostgresChatMessageHistory
 from dotenv import load_dotenv
 
