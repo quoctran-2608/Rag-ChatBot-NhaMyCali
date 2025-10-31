@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+langchain
+langchain-google-genai
+langchain-huggingface
+langchain-qdrant
+langchain-postgres
+psycopg2-binary
+requests
+pydantic
+python-dotenv
