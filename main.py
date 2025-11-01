@@ -33,33 +33,45 @@ QDRANT_URL = os.getenv("QDRANT_API_URL")  # e.g., "https://your-qdrant-cluster"
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")  # e.g., "postgresql://user:pass@host/db"
 
-# Embeddings
-embeddings = HuggingFaceEmbeddings(
-    model_name="AITeamVN/Vietnamese_Embedding",
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True}
-) 
+# Global cache for lazy loading (to avoid reload every request)
+embeddings_global = None
+llm_global = None
+tools_global = None
 
-# Qdrant Vector Store Tool
-@tool
-def qdrant_vector_store(query: str) -> str:
-    """Use this tool to get up-to-date and contextual information about user's questions."""
-    qdrant = Qdrant.from_existing_collection(
-        collection_name="nhamycali",
-        embedding=embeddings,
-        url=QDRANT_URL,
-        api_key=QDRANT_API_KEY
-    )
-    retriever = qdrant.as_retriever(search_kwargs={"k": 6})
-    results = retriever.invoke(query)
-    return "\n".join([doc.page_content for doc in results])
 
-# LLM (Google Gemini)
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0.3
-)
+# Lazy init function (call only when first request comes)
+def init_langchain_components():
+    global embeddings_global, llm_global, tools_global
+    if embeddings_global is None:
+        embeddings_global = HuggingFaceEmbeddings(
+            model_name="AITeamVN/Vietnamese_Embedding",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
+        )
+
+    if llm_global is None:
+        llm_global = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=GOOGLE_API_KEY,
+            temperature=0.3
+        )
+        
+    if tools_global is None:
+        @tool
+        def qdrant_vector_store(query: str) -> str:
+            """Use this tool to get up-to-date and contextual information about user's questions."""
+            qdrant = Qdrant.from_existing_collection(
+                collection_name="nhamycali",
+                embedding=embeddings_global,
+                url=QDRANT_URL,
+                api_key=QDRANT_API_KEY
+            )
+            retriever = qdrant.as_retriever(search_kwargs={"k": 6})
+            results = retriever.invoke(query)
+            return "\n".join([doc.page_content for doc in results])
+        tools_global = [qdrant_vector_store]
+    return llm_global, tools_global
+
 
 # Prompt from N8n (system message)
 prompt_template = PromptTemplate.from_template("""
@@ -130,10 +142,6 @@ Câu hỏi Khách hàng: {input}
 {agent_scratchpad}
 """)
 
-# Agent
-tools = [qdrant_vector_store]
-agent = create_react_agent(llm, tools, prompt_template)
-
 # Facebook API helpers
 def send_typing(recipient_id: str, action: str = "typing_on"):
     url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/{FACEBOOK_PAGE_ID}/messages"
@@ -186,7 +194,7 @@ async def handle_webhook(request: Request):
     
     if body.get("object") != "page":
         return {"status": "ok"}
-    
+     
     for entry in body["entry"]:
         page_id = entry.get("id")
         api_version = request.headers.get("facebook-api-version", FACEBOOK_API_VERSION)
@@ -210,7 +218,7 @@ async def handle_webhook(request: Request):
                 sender_id = messaging["sender"]["id"]
                 recipient_id = messaging["recipient"]["id"]
                 message = messaging.get("message", {}).get("text", "")
-                app_id = messaging.get("message", {}).get("app_id")
+                app_id = messaging.get("message", {}).get("app_id", "")
                 
                 # IF-Not-Moderator
                 if app_id != MODERATOR_APP_ID:
@@ -218,6 +226,9 @@ async def handle_webhook(request: Request):
                     if page_id != sender_id and message:
                         send_typing(sender_id)  # SendTyping1
                         
+                        # Lazy init LangChain chỉ khi có request
+                        llm, tools = init_langchain_components()
+
                         # Memory with Postgres
                         memory = ConversationBufferMemory(
                             chat_memory=PostgresChatMessageHistory(
@@ -226,11 +237,12 @@ async def handle_webhook(request: Request):
                                 context_window=10
                             )
                         )
-                        
-                        # Agent Executor
-                        agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=True)
+
+                        # Agent
+                        agent = create_react_agent(llm, tools, prompt_template)
+                        agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=False)  # verbose=False để tiết kiệm log
                         response = agent_executor.invoke({"input": message})["output"]
-                        
+                                                                       
                         # IfCauHoiPhuHop: If response not "Câu hỏi của quý khách không phù hợp ạ"
                         if "Câu hỏi của quý khách không phù hợp ạ" not in response:
                             send_typing(sender_id)  # SendTyping
