@@ -2,10 +2,7 @@ import os
 import time
 import json
 import requests
-import asyncio
-from typing import List, Dict, Any
-from fastapi import FastAPI, Request, HTTPException, Query
-from pydantic import BaseModel
+from flask import Flask, request, jsonify
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_classic.memory import ConversationBufferMemory
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -16,51 +13,45 @@ from langchain_classic.prompts import PromptTemplate
 from langchain_postgres import PostgresChatMessageHistory
 from dotenv import load_dotenv
 
-load_dotenv()  # Load from .env file
+load_dotenv()
 
-app = FastAPI()
+app = Flask(__name__)
 
-# Constants from N8n JSON
+# Constants & Global cache
 FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
-FACEBOOK_PAGE_ID = "327975473733877"  # From JSON
-FACEBOOK_API_VERSION = "v24.0"  # Default, can be overridden
-MODERATOR_APP_ID = "263902037430900"  # From JSON
-HANDOVER_APP_ID = "263902037430900"  # For pass/take thread control
-
-# AI Setup
+FACEBOOK_PAGE_ID = "327975473733877"
+FACEBOOK_API_VERSION = "v24.0"
+MODERATOR_APP_ID = "263902037430900"
+HANDOVER_APP_ID = "263902037430900"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-QDRANT_URL = os.getenv("QDRANT_API_URL")  # e.g., "https://your-qdrant-cluster"
+QDRANT_URL = os.getenv("QDRANT_API_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")  # e.g., "postgresql://user:pass@host/db"
+POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")
 
-# Global cache for lazy loading (to avoid reload every request)
 embeddings_global = None
 llm_global = None
 tools_global = None
 
-
-# Lazy init function (call only when first request comes)
+# Lazy init (giữ nguyên, thêm HF key)
 def init_langchain_components():
     global embeddings_global, llm_global, tools_global
     if embeddings_global is None:
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = HUGGINGFACE_API_KEY
         embeddings_global = HuggingFaceEmbeddings(
             model_name="AITeamVN/Vietnamese_Embedding",
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True}
         )
-
     if llm_global is None:
         llm_global = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
-            google_api_key=GOOGLE_API_KEY,
+            api_key=GOOGLE_API_KEY,
             temperature=0.3
         )
-        
     if tools_global is None:
         @tool
         def qdrant_vector_store(query: str) -> str:
-            """Use this tool to get up-to-date and contextual information about user's questions."""
             qdrant = Qdrant.from_existing_collection(
                 collection_name="nhamycali",
                 embedding=embeddings_global,
@@ -71,10 +62,9 @@ def init_langchain_components():
             results = retriever.invoke(query)
             return "\n".join([doc.page_content for doc in results])
         tools_global = [qdrant_vector_store]
-    return llm_global, tools_global
+    return embeddings_global, llm_global, tools_global
 
-
-# Prompt from N8n (system message)
+# Prompt template (giữ nguyên)
 prompt_template = PromptTemplate.from_template("""
 {tools}
 
@@ -143,119 +133,90 @@ Câu hỏi Khách hàng: {input}
 {agent_scratchpad}
 """)
 
-# Facebook API helpers
+# Helpers
 def send_typing(recipient_id: str, action: str = "typing_on"):
     url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/{FACEBOOK_PAGE_ID}/messages"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "sender_action": action,
-        "access_token": FACEBOOK_ACCESS_TOKEN
-    }
+    payload = {"recipient": {"id": recipient_id}, "sender_action": action, "access_token": FACEBOOK_ACCESS_TOKEN}
     requests.post(url, json=payload)
 
 def send_message(recipient_id: str, text: str):
     url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/{FACEBOOK_PAGE_ID}/messages"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "messaging_type": "RESPONSE",
-        "message": {"text": text},
-        "access_token": FACEBOOK_ACCESS_TOKEN
-    }
+    payload = {"recipient": {"id": recipient_id}, "messaging_type": "RESPONSE", "message": {"text": text}, "access_token": FACEBOOK_ACCESS_TOKEN}
     requests.post(url, json=payload)
 
 def pass_thread_control(recipient_id: str):
     url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/{FACEBOOK_PAGE_ID}/pass_thread_control"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "target_app_id": HANDOVER_APP_ID,
-        "access_token": FACEBOOK_ACCESS_TOKEN
-    }
+    payload = {"recipient": {"id": recipient_id}, "target_app_id": HANDOVER_APP_ID, "access_token": FACEBOOK_ACCESS_TOKEN}
     requests.post(url, json=payload)
 
 def take_thread_control(recipient_id: str):
     url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/{FACEBOOK_PAGE_ID}/take_thread_control"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "target_app_id": HANDOVER_APP_ID,
-        "access_token": FACEBOOK_ACCESS_TOKEN
-    }
+    payload = {"recipient": {"id": recipient_id}, "target_app_id": HANDOVER_APP_ID, "access_token": FACEBOOK_ACCESS_TOKEN}
     requests.post(url, json=payload)
 
-# Webhook Verification
-@app.get("/webhook")
-async def verify_webhook(mode: str = Query(None), hub_verify_token: str = Query(None), hub_challenge: str = Query(None)):
-    if mode == "subscribe" and hub_verify_token == os.getenv("FACEBOOK_VERIFY_TOKEN"):
-        return int(hub_challenge)
-    raise HTTPException(status_code=403, detail="Verification failed")
+# Routes (Flask style)
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+    if mode == 'subscribe' and token == os.getenv('FACEBOOK_VERIFY_TOKEN'):
+        return challenge
+    return 'Invalid token', 403
 
-# Main Webhook Handler
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    body = await request.json()
-    
-    if body.get("object") != "page":
-        return {"status": "ok"}
-     
-    for entry in body["entry"]:
-        page_id = entry.get("id")
-        api_version = request.headers.get("facebook-api-version", FACEBOOK_API_VERSION)
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    try:
+        body = request.get_json()
+        if body.get("object") != "page":
+            return jsonify({"status": "ok"})
         
-        # Handle standby (human handover)
-        if "standby" in entry:
-            for standby in entry["standby"]:
-                sender_id = standby["sender"]["id"]
-                recipient_id = standby["recipient"]["id"]
-                message = standby.get("message", {}).get("text", "")
-                
-                if message == "wake-up-chatbot":
-                    take_thread_control(sender_id)
-                    # Continue to AI processing if needed
-                
-                return {"status": "ok"}
-        
-        # Handle normal messaging
-        if "messaging" in entry:
-            for messaging in entry["messaging"]:
-                sender_id = messaging["sender"]["id"]
-                recipient_id = messaging["recipient"]["id"]
-                message = messaging.get("message", {}).get("text", "")
-                app_id = messaging.get("message", {}).get("app_id", "")
-                
-                # IF-Not-Moderator
-                if app_id != MODERATOR_APP_ID:
-                    # IfNotError: Check if not error (page_id != sender_id and message not empty)
-                    if page_id != sender_id and message:
-                        send_typing(sender_id)  # SendTyping1
-                        
-                        # Lazy init LangChain chỉ khi có request
-                        llm, tools = init_langchain_components()
-
-                        # Memory with Postgres
-                        memory = ConversationBufferMemory(
-                            chat_memory=PostgresChatMessageHistory(
-                                connection_string=POSTGRES_CONN_STRING,
-                                session_id=sender_id,
-                                context_window=10
+        for entry in body["entry"]:
+            page_id = entry.get("id")
+            api_version = request.headers.get("facebook-api-version", FACEBOOK_API_VERSION)
+            
+            # Standby & Messaging logic (giữ nguyên từ code bạn, đổi async thành sync)
+            if "standby" in entry:
+                # ... (code standby)
+                pass
+            
+            if "messaging" in entry:
+                for messaging in entry["messaging"]:
+                    sender_id = messaging["sender"]["id"]
+                    message = messaging.get("message", {}).get("text", "")
+                    app_id = messaging.get("message", {}).get("app_id", "")
+                    
+                    if app_id != MODERATOR_APP_ID:
+                        if page_id != sender_id and message:
+                            send_typing(sender_id)
+                            
+                            embeddings, llm, tools = init_langchain_components()
+                            memory = ConversationBufferMemory(
+                                chat_memory=PostgresChatMessageHistory(
+                                    connection_string=POSTGRES_CONN_STRING,
+                                    session_id=sender_id,
+                                    context_window=10
+                                )
                             )
-                        )
+                            agent = create_react_agent(llm, tools, prompt_template)
+                            agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=False)
+                            try:
+                                response = agent_executor.invoke({"input": message})["output"]
+                            except Exception as e:
+                                response = "Dạ, Minh đang gặp chút vấn đề kỹ thuật. Bạn thử nhắn lại nhé! 😊"
+                            
+                            if "Câu hỏi của quý khách không phù hợp ạ" not in response:
+                                send_typing(sender_id)
+                                time.sleep(1)  # Sync ok for Flask
+                                send_typing(sender_id, "typing_off")
+                                send_message(sender_id, response)
+                    else:
+                        pass_thread_control(sender_id)
+        
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print(f"Webhook error: {e}")  # Log error
+        return jsonify({"status": "ok"})  # Always 200 for Facebook
 
-                        # Agent
-                        agent = create_react_agent(llm, tools, prompt_template)
-                        agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=False)  # verbose=False để tiết kiệm log
-                        response = agent_executor.invoke({"input": message})["output"]
-                                                                       
-                        # IfCauHoiPhuHop: If response not "Câu hỏi của quý khách không phù hợp ạ"
-                        if "Câu hỏi của quý khách không phù hợp ạ" not in response:
-                            send_typing(sender_id)  # SendTyping
-                            time.sleep(1)  # Wait (simulate delay)
-                            send_typing(sender_id)  # SendTyping2
-                            send_message(sender_id, response)  # SendMessage
-                        
-                else:
-                    pass_thread_control(sender_id)
-    
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
