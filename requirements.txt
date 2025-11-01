@@ -6,7 +6,6 @@ langchain-google-genai
 langchain-huggingface
 langchain-qdrant
 langchain-postgres
-sentence-transformers
 psycopg2-binary
 requests
 pydantic
