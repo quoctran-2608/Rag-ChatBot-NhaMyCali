@@ -175,10 +175,18 @@ def handle_webhook():
             page_id = entry.get("id")
             api_version = request.headers.get("facebook-api-version", FACEBOOK_API_VERSION)
             
-            # Standby & Messaging logic (giữ nguyên từ code bạn, đổi async thành sync)
-            if "standby" in entry:
-                # ... (code standby)
-                pass
+        # Handle standby (human handover)
+        if "standby" in entry:
+            for standby in entry["standby"]:
+                sender_id = standby["sender"]["id"]
+                recipient_id = standby["recipient"]["id"]
+                message = standby.get("message", {}).get("text", "")
+                
+                if message == "wake-up-chatbot":
+                    take_thread_control(sender_id)
+                    # Continue to AI processing if needed
+                
+                return {"status": "ok"}
             
             if "messaging" in entry:
                 for messaging in entry["messaging"]:
