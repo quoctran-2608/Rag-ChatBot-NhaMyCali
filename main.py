@@ -218,5 +218,10 @@ def handle_webhook():
         print(f"Webhook error: {e}")  # Log error
         return jsonify({"status": "ok"})  # Always 200 for Facebook
 
+# Thêm route root ở cuối file
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({"message": "Chatbot Nhà Mỹ Cali đang chạy tốt! Dùng /webhook để test Facebook Messenger."})
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
